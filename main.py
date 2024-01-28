@@ -1,148 +1,96 @@
-#!/usr/bin/env python
-"""
-Licensed under the MIT Licence, Copyright (c) 2014 Sinch AB
-
-This demonstrates a basic partner backend for generating authentication tokens.
-In this example the user database is not persistent: Only for demonstrational purpose!
-See rows ~100-120 for code on generating a Sinch compatible authentication token.
-"""
-import tornado.ioloop
+# وارد کردن ماژول sqlite3
 import sqlite3
-import tornado.web
-from tornado.web import Finish
-from datetime import datetime
-import json
-import uuid
-import hmac
-import hashlib
-import base64
 
-# Port
-HTTP_PORT = 2048
+# ایجاد یک اتصال به دیتابیس
+conn = sqlite3.connect('jobs.db')
 
-# App key + secret
-APPLICATION_KEY = 'INSERT_YOUR_APP_KEY_HERE'
-APPLICATION_SECRET = 'INSERT_YOUR_APP_SECRET_HERE'
-
-userBase = dict()
-conn = sqlite3.connect("person.db")
+# ایجاد یک شیء cursor برای اجرای پرسمان‌ها
 cur = conn.cursor()
 
-# Generate Sinch authentication ticket. Implementation of:
-# http://www.sinch.com/docs/rest-apis/api-documentation/#Authorization
-def getAuthTicket(user):
-    userTicket = {
-        'identity': {'type': 'username', 'endpoint': user['username']},
-        'expiresIn': 3600, #1 hour expiration time of session when created using this ticket
-        'applicationKey': APPLICATION_KEY,
-        'created': datetime.utcnow().isoformat()
-    }
+# ایجاد جدول user با ستون‌های username، password، birthdate، resume و interests
+cur.execute('''
+CREATE TABLE user (
+    username TEXT PRIMARY KEY,
+    password TEXT NOT NULL,
+    birthdate DATE NOT NULL,
+    resume TEXT,
+    interests TEXT
+)
+''')
 
-    userTicketJson = json.dumps(userTicket).replace(" ", "")
-    userTicketBase64 = base64.b64encode(userTicketJson)
+# ایجاد جدول company با ستون‌های company_id، company_name و company_address
+cur.execute('''
+CREATE TABLE company (
+    company_id INTEGER PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    company_address TEXT
+)
+''')
 
-    # TicketSignature = Base64 ( HMAC-SHA256 ( ApplicationSecret, UTF8 ( UserTicketJson ) ) )
-    digest = hmac.new(base64.b64decode(
-        APPLICATION_SECRET), msg=userTicketJson, digestmod=hashlib.sha256).digest()
-    signature = base64.b64encode(digest)
+# ایجاد جدول jobs با ستون‌های job_id، job_title، job_description، company_id و salary
+cur.execute('''
+CREATE TABLE jobs (
+    job_id INTEGER PRIMARY KEY,
+    job_title TEXT NOT NULL,
+    job_description TEXT,
+    company_id INTEGER NOT NULL,
+    salary REAL,
+    FOREIGN KEY (company_id) REFERENCES company (company_id)
+)
+''')
 
-    # UserTicket = TicketData + ":" + TicketSignature
-    signedUserTicket = userTicketBase64 + ':' + signature
-    return {'userTicket': signedUserTicket}
+# درج چند رکورد نمونه در جدول user
+cur.execute('''
+INSERT INTO user (username, password, birthdate, resume, interests)
+VALUES
+('ali', '1234', '1990-01-01', 'I am a software engineer with 5 years of experience.', 'programming, reading, music'),
+('sara', '5678', '1992-02-02', 'I am a graphic designer with 3 years of experience.', 'design, art, photography'),
+('reza', 'abcd', '1994-03-03', 'I am a data analyst with 2 years of experience.', 'data, statistics, machine learning')
+''')
 
+# درج چند رکورد نمونه در جدول company
+cur.execute('''
+INSERT INTO company (company_name, company_address)
+VALUES
+('ABC', 'Tehran, Iran'),
+('XYZ', 'Shiraz, Iran'),
+('LMN', 'Isfahan, Iran')
+''')
 
-# REST endpoints
-class PingHandler(tornado.web.RequestHandler):
+# درج چند رکورد نمونه در جدول jobs
+cur.execute('''
+INSERT INTO jobs (job_title, job_description, company_id, salary)
+VALUES
+('Software Developer', 'Develop web and mobile applications using Python, Django and React.', 1, 2000.0),
+('Graphic Designer', 'Create logos, flyers and posters using Photoshop and Illustrator.', 2, 1500.0),
+('Data Scientist', 'Analyze and visualize data using Python, Pandas and Matplotlib.', 3, 2500.0)
+''')
 
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Content-Type", "application/json; charset=UTF-8")
+# ذخیره تغییرات در دیتابیس
+conn.commit()
 
-    def get(self):
-        self.write('pong')
+# اجرای چند پرسمان نمونه
 
-class RestResource(tornado.web.RequestHandler):
+# پرسمان 1: نمایش نام، رزومه و علایق کاربرانی که علاقه به برنامه‌نویسی دارند
+cur.execute('''
+SELECT username, resume, interests
+FROM user
+WHERE interests LIKE '%programming%'
+''')
+print('Users who are interested in programming:')
+for row in cur:
+    print(row)
 
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Content-Type", "application/json; charset=UTF-8")
+# پرسمان 2: نمایش عنوان شغل، نام شرکت و حقوق شغل‌هایی که حقوق بیش از 2000 دلار دارند
+cur.execute('''
+SELECT job_title, company_name, salary
+FROM jobs
+JOIN company ON jobs.company_id = company.company_id
+WHERE salary > 2000
+''')
+print('Jobs with salary more than 2000:')
+for row in cur:
+    print(row)
 
-    def write_error(self, status_code, **kwargs):
-        data = {}
-        for key, value in kwargs.iteritems():
-            data[key] = value
-        try:
-            del data['exc_info']
-        except:
-            pass
-
-        self.write(json.dumps(data))
-        self.set_status(status_code)
-        raise Finish()
-
-
-class RegisterHandler(RestResource):
-    cur.execute("CREATE TABLE IF NOT EXISTS usernamepasword (username TEXT,password TEXT)")
-
-    def post(self):
-        user = json.loads(self.request.body)
-
-        if 'username' not in user:
-            self.write_error(400, errorCode=40001, message='username not found')
-        if 'password' not in user:
-            self.write_error(400, errorCode=40002, message='password not found')
-        if user['username'] in userBase:
-            self.write_error(400, errorCode=40003, message='user already registered')
-
-        salt = uuid.uuid4().hex
-        userBase[user['username']] = salt, hashlib.sha256(
-            salt + user['password'] + '31337 salted').hexdigest()
-
-        print ('Created user, now the user base is:')
-        for name in userBase:
-            print ('\t' + name + '\t' + userBase[name][1])
-
-        self.write(json.dumps(getAuthTicket(user)))
-        cur.execute("INSERT INTO person VALUES (?, ?)",(user['username'], user['password']))
-
-class LoginHandler(RestResource):
-
-    def post(self):
-        user = json.loads(self.request.body)
-
-        if 'username' not in user:
-            self.write_error(400, errorCode=40001, message='username not found')
-        if 'password' not in user:
-            self.write_error(400, errorCode=40002, message='password not found')
-        if user['username'] not in userBase:
-            self.write_error(400, errorCode=40004, message='user not registered')
-
-        salt = userBase[user['username']][0]
-        correctPassHash = userBase[user['username']][1]
-        candidatePassHash = hashlib.sha256(
-            salt + user['password'] + '31337 salted').hexdigest()
-
-        if candidatePassHash != correctPassHash:
-            self.write_error(401, errorCode=40100, message='incorrect password')
-        elif candidatePassHash == correctPassHash:  # Correct password
-            self.write(json.dumps(getAuthTicket(user)))
-
-
-backend = tornado.web.Application([
-    (r"/ping", PingHandler),
-    (r"/register", RegisterHandler),
-    (r"/login", LoginHandler),
-])
-
-if __name__ == "__main__":
-
-    print ("Starting Sinch demo backend on port: \033[1m" + str(HTTP_PORT) +'\033[0m')
-    print ("Application key: \033[1m" + APPLICATION_KEY +'\033[0m')
-    print ("Post JSON object to \033[1m/register\033[0m to create user")
-    print ("Post JSON object to \033[1m/login\033[0m to retrieve authentication token")
-    print ("Example JSON: {username: 'someUserName', password: 'highlySecurePwd'}")
-    print ("--- LOG ---")
-    conn.commit()
-    conn.close()
-    backend.listen(HTTP_PORT)
-    tornado.ioloop.IOLoop.instance().start()
+# بستن اتصال به دیتابیس
+conn.close()
